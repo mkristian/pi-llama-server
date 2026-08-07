@@ -33,13 +33,16 @@ The llama-server URL is resolved in this order:
 
 1. **Per-project config** — create `.pi/llama-server.json` in your project root:
    ```json
-   { "url": "http://10.0.0.5:9090" }
+   { "url": "http://10.0.0.5:9090", "apiKey": "your-api-key" }
    ```
 2. **Environment variable** — set globally:
    ```bash
    export LLAMA_SERVER_URL=http://10.0.0.5:9090
+   export LLAMA_SERVER_API_KEY=your-api-key
    ```
-3. **Default** — falls back to `http://127.0.0.1:8080`
+3. **Default** — falls back to `http://127.0.0.1:8080` (no API key)
+
+The API key is used as a Bearer token in the `Authorization` header for all requests to the server, including model listing, loading, SSE status streaming, and OpenAI-compatible completions.
 
 ## Usage
 
