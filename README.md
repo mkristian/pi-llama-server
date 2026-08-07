@@ -38,8 +38,11 @@ The llama-server URL is resolved in this order:
 2. **Environment variable** — set globally:
    ```bash
    export LLAMA_SERVER_URL=http://10.0.0.5:9090
+   export LLAMA_SERVER_API_KEY=<your-api-key>
    ```
 3. **Default** — falls back to `http://127.0.0.1:8080`
+
+If the llama-server endpoint requires authentication, set `LLAMA_SERVER_API_KEY` to provide a Bearer token. The key is sent with all API requests and SSE connections.
 
 ## Usage
 

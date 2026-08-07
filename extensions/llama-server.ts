@@ -5,6 +5,7 @@
 //   { "url": "http://10.0.0.5:9090" }
 //
 // Or globally via env: LLAMA_SERVER_URL=http://host:port
+// Or globally via env: LLAMA_SERVER_API_KEY=<your-api-key>
 // Defaults to http://127.0.0.1:8080
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -81,10 +82,23 @@ function resolveUrl(cwd: string): string {
   return process.env.LLAMA_SERVER_URL || "http://127.0.0.1:8080";
 }
 
-function rpc(base: string, method: string, body?: Record<string, unknown>) {
+function resolveApiKey(): string | undefined {
+  return process.env.LLAMA_SERVER_API_KEY;
+}
+
+function rpc(
+  base: string,
+  method: string,
+  body?: Record<string, unknown>,
+  apiKey?: string | undefined
+) {
+  const headers: Record<string, string> = body
+    ? { "Content-Type": "application/json" }
+    : {};
+  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
   return fetch(`${base}${method}`, {
     method: body ? "POST" : "GET",
-    headers: body ? { "Content-Type": "application/json" } : undefined,
+    headers: Object.keys(headers).length ? headers : undefined,
     body: body ? JSON.stringify(body) : undefined,
   }).then(async (res) => {
     if (!res.ok) {
@@ -103,8 +117,11 @@ function isSelectableModel(id: string): boolean {
   );
 }
 
-async function listModels(base: string): Promise<ServerModel[]> {
-  const data = (await rpc(base, "/models")) as {
+async function listModels(
+  base: string,
+  apiKey?: string | undefined
+): Promise<ServerModel[]> {
+  const data = (await rpc(base, "/models", undefined, apiKey)) as {
     data?: ServerModel[];
   };
   return (data.data ?? []).filter((m) => m.id && isSelectableModel(m.id));
@@ -112,9 +129,10 @@ async function listModels(base: string): Promise<ServerModel[]> {
 
 async function findModel(
   base: string,
-  modelId: string
+  modelId: string,
+  apiKey?: string | undefined
 ): Promise<ServerModel | undefined> {
-  return (await listModels(base)).find((m) => m.id === modelId);
+  return (await listModels(base, apiKey)).find((m) => m.id === modelId);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -217,11 +235,15 @@ async function watchModelSse(
   base: string,
   modelId: string,
   ui: StatusUI,
-  signal: AbortSignal
+  signal: AbortSignal,
+  apiKey?: string | undefined
 ): Promise<TerminalLoadState | undefined> {
   let res: Response;
   try {
-    res = await fetch(`${base}/models/sse`, { signal });
+    res = await fetch(`${base}/models/sse`, {
+      signal,
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+    });
   } catch {
     return signal.aborted ? undefined : "unavailable";
   }
@@ -262,13 +284,14 @@ async function watchModelSse(
 async function pollTerminalModelState(
   base: string,
   modelId: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  apiKey?: string | undefined
 ): Promise<TerminalLoadState> {
   const deadline = Date.now() + MODEL_LOAD_TIMEOUT_MS;
 
   while (!signal.aborted && Date.now() < deadline) {
     try {
-      const model = await findModel(base, modelId);
+      const model = await findModel(base, modelId, apiKey);
       const state = model ? modelState(model) : undefined;
       if (state === "loaded" || state === "sleeping") return "loaded";
       if (state === "failed") return "failed";
@@ -286,7 +309,8 @@ async function trackModelLoad(
   base: string,
   modelId: string,
   ui: StatusUI,
-  signal: AbortSignal
+  signal: AbortSignal,
+  apiKey?: string | undefined
 ) {
   ui.setStatus(STATUS_KEY, loadingStatus(ui, modelId));
 
@@ -295,8 +319,8 @@ async function trackModelLoad(
   signal.addEventListener("abort", abort, { once: true });
 
   try {
-    const ssePromise = watchModelSse(base, modelId, ui, controller.signal);
-    const pollPromise = pollTerminalModelState(base, modelId, controller.signal);
+    const ssePromise = watchModelSse(base, modelId, ui, controller.signal, apiKey);
+    const pollPromise = pollTerminalModelState(base, modelId, controller.signal, apiKey);
 
     let result = await Promise.race([ssePromise, pollPromise]);
     if (!result || result === "unavailable") {
@@ -324,7 +348,8 @@ async function trackModelLoad(
 
 export default async function (pi: ExtensionAPI) {
   const url = resolveUrl(process.cwd());
-  const serverModels = await listModels(url).catch((): ServerModel[] => []);
+  const apiKey = resolveApiKey();
+  const serverModels = await listModels(url, apiKey).catch((): ServerModel[] => []);
   if (serverModels.length === 0) return;
 
   const models = serverModels.map((m) => ({
@@ -340,7 +365,7 @@ export default async function (pi: ExtensionAPI) {
   pi.registerProvider("llama-server", {
     baseUrl: `${url}/v1`,
     api: "openai-completions",
-    apiKey: "not-needed",
+    apiKey: apiKey ?? "not-needed",
     compat: {
       supportsDeveloperRole: false,
       supportsReasoningEffort: false,
@@ -370,7 +395,7 @@ export default async function (pi: ExtensionAPI) {
       const base = resolveUrl(cwd);
       ui.setStatus(STATUS_KEY, loadingStatus(ui, modelId));
 
-      const current = await findModel(base, modelId).catch(() => undefined);
+      const current = await findModel(base, modelId, apiKey).catch(() => undefined);
       const currentState = current ? modelState(current) : undefined;
       if (currentState === "loaded" || currentState === "sleeping") {
         ui.setStatus(STATUS_KEY, undefined);
@@ -386,8 +411,8 @@ export default async function (pi: ExtensionAPI) {
 
       if (currentState !== "loading") {
         await sleep(50);
-        await rpc(base, "/models/load", { model: modelId }).catch(async () => {
-          const latest = await findModel(base, modelId).catch(() => undefined);
+        await rpc(base, "/models/load", { model: modelId }, apiKey).catch(async () => {
+          const latest = await findModel(base, modelId, apiKey).catch(() => undefined);
           const latestState = latest ? modelState(latest) : undefined;
           if (latestState === "loaded" || latestState === "sleeping") {
             ui.setStatus(STATUS_KEY, undefined);
