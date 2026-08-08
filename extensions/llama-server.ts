@@ -6,6 +6,11 @@
 //
 // Or globally via env: LLAMA_SERVER_URL=http://host:port
 // Defaults to http://127.0.0.1:8080
+//
+// API key is resolved from:
+// 1. Per-project config (.pi/llama-server.json) → "apiKey"
+// 2. Environment variable LLAMA_SERVER_API_KEY
+// 3. Defaults to undefined (no auth)
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { readFileSync } from "node:fs";
@@ -79,6 +84,17 @@ function resolveUrl(cwd: string): string {
     // Missing or invalid project config is fine.
   }
   return process.env.LLAMA_SERVER_URL || "http://127.0.0.1:8080";
+}
+
+function resolveApiKey(cwd: string): string | undefined {
+  try {
+    const raw = readFileSync(join(cwd, ".pi", "llama-server.json"), "utf-8");
+    const cfg = JSON.parse(raw);
+    if (cfg.apiKey) return cfg.apiKey;
+  } catch {
+    // Missing or invalid project config is fine.
+  }
+  return process.env.LLAMA_SERVER_API_KEY;
 }
 
 function rpc(base: string, method: string, body?: Record<string, unknown>) {
@@ -340,7 +356,7 @@ export default async function (pi: ExtensionAPI) {
   pi.registerProvider("llama-server", {
     baseUrl: `${url}/v1`,
     api: "openai-completions",
-    apiKey: "not-needed",
+    apiKey: resolveApiKey(ctx.cwd) ?? "not-needed",
     compat: {
       supportsDeveloperRole: false,
       supportsReasoningEffort: false,

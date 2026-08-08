@@ -29,6 +29,8 @@ Pi auto-discovers the extension via `pi.extensions` in `package.json`. No additi
 
 ## Configuration
 
+### URL
+
 The llama-server URL is resolved in this order:
 
 1. **Per-project config** — create `.pi/llama-server.json` in your project root:
@@ -40,6 +42,21 @@ The llama-server URL is resolved in this order:
    export LLAMA_SERVER_URL=http://10.0.0.5:9090
    ```
 3. **Default** — falls back to `http://127.0.0.1:8080`
+
+### API Key
+
+If your llama-server endpoint requires authentication, provide the API key in one of these ways:
+
+1. **Per-project config** — add `apiKey` to `.pi/llama-server.json`:
+   ```json
+   { "url": "http://10.0.0.5:9090", "apiKey": "sk-xxx" }
+   ```
+2. **Environment variable** — set globally:
+   ```bash
+   export LLAMA_SERVER_API_KEY=sk-xxx
+   ```
+
+When an API key is configured, it is sent as a Bearer token in requests to the OpenAI-compatible endpoint (`/v1/...`).
 
 ## Usage
 
