@@ -41,6 +41,16 @@ The llama-server URL is resolved in this order:
    ```
 3. **Default** — falls back to `http://127.0.0.1:8080`
 
+### API Key Authentication
+
+If your llama-server endpoint requires authentication, set the API key:
+
+```bash
+export LLAMA_SERVER_API_KEY=your-api-key
+```
+
+The API key is sent as a `Bearer` token in the `Authorization` header for all requests to the llama-server endpoints (`/models`, `/models/load`, `/models/sse`).
+
 ## Usage
 
 Use **Ctrl+P** (or `/model`) in Pi to select any llama-server model for inference. Pi switches to that model, and the extension automatically tells llama-server to load it. While llama-server reports loading progress, Pi shows a progress bar in the footer status.
