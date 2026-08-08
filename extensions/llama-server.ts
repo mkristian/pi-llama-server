@@ -2,9 +2,10 @@
 // Pi extension for llama-server router integration
 //
 // Configure per-project via .pi/llama-server.json:
-//   { "url": "http://10.0.0.5:9090" }
+//   { "url": "http://10.0.0.5:9090", "apiKey": "your-api-key" }
 //
 // Or globally via env: LLAMA_SERVER_URL=http://host:port
+// Or LLAMA_SERVER_API_KEY=your-api-key for endpoints requiring authentication
 // Defaults to http://127.0.0.1:8080
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -81,10 +82,23 @@ function resolveUrl(cwd: string): string {
   return process.env.LLAMA_SERVER_URL || "http://127.0.0.1:8080";
 }
 
-function rpc(base: string, method: string, body?: Record<string, unknown>) {
+function resolveApiKey(cwd: string): string | undefined {
+  try {
+    const raw = readFileSync(join(cwd, ".pi", "llama-server.json"), "utf-8");
+    const cfg = JSON.parse(raw);
+    if (cfg.apiKey) return cfg.apiKey;
+  } catch {
+    // Missing or invalid project config is fine.
+  }
+  return process.env.LLAMA_SERVER_API_KEY || undefined;
+}
+
+function rpc(base: string, method: string, apiKey?: string, body?: Record<string, unknown>) {
+  const headers: Record<string, string> = body ? { "Content-Type": "application/json" } : {};
+  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
   return fetch(`${base}${method}`, {
     method: body ? "POST" : "GET",
-    headers: body ? { "Content-Type": "application/json" } : undefined,
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   }).then(async (res) => {
     if (!res.ok) {
@@ -103,8 +117,8 @@ function isSelectableModel(id: string): boolean {
   );
 }
 
-async function listModels(base: string): Promise<ServerModel[]> {
-  const data = (await rpc(base, "/models")) as {
+async function listModels(base: string, apiKey?: string): Promise<ServerModel[]> {
+  const data = (await rpc(base, "/models", apiKey)) as {
     data?: ServerModel[];
   };
   return (data.data ?? []).filter((m) => m.id && isSelectableModel(m.id));
@@ -112,9 +126,10 @@ async function listModels(base: string): Promise<ServerModel[]> {
 
 async function findModel(
   base: string,
-  modelId: string
+  modelId: string,
+  apiKey?: string
 ): Promise<ServerModel | undefined> {
-  return (await listModels(base)).find((m) => m.id === modelId);
+  return (await listModels(base, apiKey)).find((m) => m.id === modelId);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -217,11 +232,14 @@ async function watchModelSse(
   base: string,
   modelId: string,
   ui: StatusUI,
-  signal: AbortSignal
+  signal: AbortSignal,
+  apiKey?: string
 ): Promise<TerminalLoadState | undefined> {
   let res: Response;
   try {
-    res = await fetch(`${base}/models/sse`, { signal });
+    const headers: Record<string, string> = {};
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+    res = await fetch(`${base}/models/sse`, { signal, headers });
   } catch {
     return signal.aborted ? undefined : "unavailable";
   }
@@ -262,13 +280,14 @@ async function watchModelSse(
 async function pollTerminalModelState(
   base: string,
   modelId: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  apiKey?: string
 ): Promise<TerminalLoadState> {
   const deadline = Date.now() + MODEL_LOAD_TIMEOUT_MS;
 
   while (!signal.aborted && Date.now() < deadline) {
     try {
-      const model = await findModel(base, modelId);
+      const model = await findModel(base, modelId, apiKey);
       const state = model ? modelState(model) : undefined;
       if (state === "loaded" || state === "sleeping") return "loaded";
       if (state === "failed") return "failed";
@@ -286,7 +305,8 @@ async function trackModelLoad(
   base: string,
   modelId: string,
   ui: StatusUI,
-  signal: AbortSignal
+  signal: AbortSignal,
+  apiKey?: string
 ) {
   ui.setStatus(STATUS_KEY, loadingStatus(ui, modelId));
 
@@ -295,8 +315,8 @@ async function trackModelLoad(
   signal.addEventListener("abort", abort, { once: true });
 
   try {
-    const ssePromise = watchModelSse(base, modelId, ui, controller.signal);
-    const pollPromise = pollTerminalModelState(base, modelId, controller.signal);
+    const ssePromise = watchModelSse(base, modelId, ui, controller.signal, apiKey);
+    const pollPromise = pollTerminalModelState(base, modelId, controller.signal, apiKey);
 
     let result = await Promise.race([ssePromise, pollPromise]);
     if (!result || result === "unavailable") {
@@ -324,7 +344,8 @@ async function trackModelLoad(
 
 export default async function (pi: ExtensionAPI) {
   const url = resolveUrl(process.cwd());
-  const serverModels = await listModels(url).catch((): ServerModel[] => []);
+  const apiKey = resolveApiKey(process.cwd());
+  const serverModels = await listModels(url, apiKey).catch((): ServerModel[] => []);
   if (serverModels.length === 0) return;
 
   const models = serverModels.map((m) => ({
@@ -365,12 +386,13 @@ export default async function (pi: ExtensionAPI) {
 
     activeLoad?.controller.abort();
     const controller = new AbortController();
+    const apiKey = resolveApiKey(cwd);
 
     const promise = (async () => {
       const base = resolveUrl(cwd);
       ui.setStatus(STATUS_KEY, loadingStatus(ui, modelId));
 
-      const current = await findModel(base, modelId).catch(() => undefined);
+      const current = await findModel(base, modelId, apiKey).catch(() => undefined);
       const currentState = current ? modelState(current) : undefined;
       if (currentState === "loaded" || currentState === "sleeping") {
         ui.setStatus(STATUS_KEY, undefined);
@@ -381,13 +403,14 @@ export default async function (pi: ExtensionAPI) {
         base,
         modelId,
         ui,
-        controller.signal
+        controller.signal,
+        apiKey
       );
 
       if (currentState !== "loading") {
         await sleep(50);
-        await rpc(base, "/models/load", { model: modelId }).catch(async () => {
-          const latest = await findModel(base, modelId).catch(() => undefined);
+        await rpc(base, "/models/load", apiKey, { model: modelId }).catch(async () => {
+          const latest = await findModel(base, modelId, apiKey).catch(() => undefined);
           const latestState = latest ? modelState(latest) : undefined;
           if (latestState === "loaded" || latestState === "sleeping") {
             ui.setStatus(STATUS_KEY, undefined);
@@ -424,4 +447,4 @@ export default async function (pi: ExtensionAPI) {
     await ensureModelLoaded(ctx.cwd, ctx.model.id, ctx.ui);
     return event.payload;
   });
-};
+}
